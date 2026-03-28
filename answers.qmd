@@ -1,0 +1,489 @@
+---
+title: "Public housing and health"
+subtitle: "Problem set 7 --- PMAP 8521, SEMESTER YEAR"
+author: "YOUR NAME HERE"  # Replace with your actual name
+date: "DATE GOES HERE"  # Replace with the date
+date-format: "long"
+bibliography: references.bib
+link-citations: true
+format:
+  html:
+    toc: true
+    knitr:
+      opts_chunk: 
+        dev: "ragg_png"
+        dpi: 300
+        fig-align: "center"
+  typst:
+    toc: true
+    toc-title: Contents
+    citeproc: true
+    output-file: PREFIX_eval-07-iv.pdf
+    pdf-standard: ua-1
+    callout-appearance: minimal
+    linkcolor: "#a52c60"
+    filters:
+      - math-alt.lua
+    include-in-header: 
+      text: |
+        // TOC stuff
+        // Make the title centered and slightly smaller than a full heading
+        #show outline: it => {
+          show heading: it => align(center, text(size: 0.75em, it))
+          it
+        }
+    include-before-body: 
+      text: |
+        // Color links with pink-ish red from viridis plasma: 
+        // viridisLite::viridis(8, option = "inferno", begin = 0.1, end = 0.9)[4]
+        #show link: set text(fill: rgb("a52c60"))
+
+        // Keep track of previous heading levels
+        #let last-heading-level = state("last-heading-level", 0)
+
+        // Add page breaks before all level 1 headings
+        // Add page breaks before level 2 headings that don't come after level 1
+        #show heading: it => {
+          context {
+            let prev-level = last-heading-level.get()
+
+            if it.level == 1 {
+              pagebreak(weak: true)
+              last-heading-level.update(1)
+            } else if it.level == 2 {
+              if prev-level != 1 {
+                pagebreak(weak: true)
+              }
+              last-heading-level.update(2)
+            } else {
+              last-heading-level.update(it.level)
+            }
+          }
+          it
+        }
+  pdf:
+    toc: true
+  docx:
+    toc: true
+---
+
+```{r}
+#| label: extra-options
+#| include: false
+
+# Set some default figure settings
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.asp = 0.618,
+  fig.align = "center",
+  fig.retina = 3,
+  out.width = "75%"
+)
+```
+
+# Overview
+
+Economic research shows [@FertigReingold:2007] that there is a potential (albeit weak) connection between health outcomes and residency in public housing. You are interested in finding the effect of public housing assistance on health outcomes. In the absence of experimental data, you must use observational data collected by the Georgia Department of Public Health. You have access to a dataset of 1,000 rows with the following columns:
+
+| Variable name         | Description                                                                      |
+| --------------------- | -------------------------------------------------------------------------------- |
+| `HealthStatus`        | Health status on a scale from 1 = poor to 20 = excellent                        |
+| `HealthBehavior`      | Omitted variable (you can't actually measure this!)                              |
+| `PublicHousing`       | Number of years spent in public housing                                          |
+| `Supply`              | Number of available public housing units in the city per 100 eligible households |
+| `ParentsHealthStatus` | Health status of parents on a scale from 1 = poor to 20 = excellent             |
+| `WaitingTime`         | Average waiting time before obtaining public housing in the city (in months)     |
+| `Stamp`               | Dollar amount of food stamps (SNAP) spent each month                             |
+| `Age`                 | Age                                                                              |
+| `Race`                | Race; 1 = White, 2 = Black, 3 = Hispanic, 4 = Other                             |
+| `Education`           | Education; 1 = Some high school, 2 = High school, 3 = Bachelor's, 4 = Master's  |
+| `MaritalStatus`       | Marital status; 1 = Single, 2 = Married, 3 = Widow, 4 = Divorced                |
+
+::: {.callout-warning title="Fake data!"}
+This isn't actually a real program or real data, but it's based on analysis by @FertigReingold:2007.
+:::
+
+Your goal is to measure the effect of living in public housing (`PublicHousing`) on health (`HealthStatus`). There is omitted variable bias, though, since people who care more about their health might be more likely to self-select into public housing and report a better health status score. The magic variable `HealthBehavior` measures this omitted variable, and you can use it as reference to make sure you get the models right (this is the same as "ability" in the examples in class), but **don't include it in any of your actual models**, since it's not real.
+
+The code below loads the data. **You don't need to modify anything in this chunk of code---you only need to run it.**
+
+```{r}
+#| label: load-libraries-data
+#| warning: false
+#| message: false
+
+library(tidyverse)     # For ggplot, mutate(), filter(), and friends
+library(parameters)    # For converting models to data frames
+library(estimatr)      # For lm_robust() and iv_robust()
+library(modelsummary)  # For showing side-by-side regression tables
+library(patchwork)     # For combining ggplot plots
+library(tinytable)
+
+housing <- read_csv("data/public_housing.csv")
+```
+
+# Task 1: Instrument suitability
+
+This data includes four potential instruments:
+
+- `Supply`: Number of available public housing units in the city per 100 eligible households
+- `ParentsHealthStatus`: Health status of parents on a scale from 1 = poor to 20 = excellent
+- `WaitingTime`: Average waiting time before obtaining public housing in the city (in months)
+- `Stamp`: Dollar amount of food stamps (SNAP) spent each month
+
+Evaluate the suitability of each of the four potential instruments. Check if they (1) have *relevance* with a scatterplot and model and F-test, (2) meet the *excludability* assumption, and (3) meet the *exogeneity* assumption. Choose one of these as your main instrument and justify why it's the best. Explain why the other three are not.
+
+::: {.callout-tip title="Answer"}
+In past problem sets, I put the answers in little green callout boxes. However, since this assignment has a lot less step-by-step scaffolding, it doesn't make sense to put *all this* in a callout box, so everything else in this section is the answer.
+:::
+
+For this policy, any instrument needs to meet these assumptions:
+
+1. *Relevance*: Instrument is correlated with public housing
+2. *Exclusion*: Instrument is correlated with health *only through* public housing
+3. *Exogeneity*: Instrument isn't correlated with anything else related to public housing
+
+## Relevance
+
+We'll start by checking the relevancy of each of these potential instruments, looking for some sort of relationship between the instrument and public housing use. First we'll plot scatterplots of all four in @fig-check-relevancy-all-instruments:
+
+```{r}
+#| label: fig-check-relevancy-all-instruments
+#| fig-cap: "Plots showing the relationship between each instrument and the public housing treatment. Ideally we want the instrument to be strongly associated with the outcome."
+#| fig-alt: |
+#|   Four scatter charts arranged in a 2×2 grid. Each shows one potential
+#|   instrument on the x-axis and years in public housing on the y-axis,
+#|   with a linear regression line and confidence band overlaid. Housing
+#|   supply, parental health status, and food stamp spending each show
+#|   nearly flat trend lines with wide scatter, indicating weak
+#|   relationships. Waiting time shows a clearly positive slope with
+#|   noticeably less scatter, making it the only instrument with a strong
+#|   association with public housing use.
+#| fig-width: 8
+#| message: false
+#| out-width: 90%
+
+plot_supply <- ggplot(housing, aes(x = Supply, y = PublicHousing)) +
+  geom_point(size = 0.5, alpha = 0.25) +
+  geom_smooth(method = "lm")
+
+plot_parents <- ggplot(
+  housing,
+  aes(x = ParentsHealthStatus, y = PublicHousing)
+) +
+  geom_point(size = 0.5, alpha = 0.25) +
+  geom_smooth(method = "lm")
+
+plot_waiting <- ggplot(housing, aes(x = WaitingTime, y = PublicHousing)) +
+  geom_point(size = 0.5, alpha = 0.25) +
+  geom_smooth(method = "lm")
+
+plot_stamp <- ggplot(housing, aes(x = Stamp, y = PublicHousing)) +
+  geom_point(size = 0.5, alpha = 0.25) +
+  geom_smooth(method = "lm")
+
+plot_supply +
+  plot_parents +
+  plot_waiting +
+  plot_stamp
+```
+
+Only one of these has a strong relationship with public housing: waiting time. We can run a bunch of simple regression models (see @tbl-check-relevancy-all-instruments) to check the size of the relationship, as well as the F-statistic (which we want to be above 104 (or 10, if you want to live in the good old days)):
+
+```{r}
+#| label: tbl-check-relevancy-all-instruments
+#| tbl-cap: "Model results checking for relevance. Ideally we want the instrument to be strongly associated with the outcome."
+#| warning: false
+
+check_supply <- lm(PublicHousing ~ Supply, data = housing)
+check_parents <- lm(PublicHousing ~ ParentsHealthStatus, data = housing)
+check_waiting <- lm(PublicHousing ~ WaitingTime, data = housing)
+check_stamp <- lm(PublicHousing ~ Stamp, data = housing)
+
+modelsummary(
+  list(check_supply, check_parents, check_waiting, check_stamp),
+  gof_map = c("nobs", "r.squared", "adj.r.squared", "F"),
+  stars = TRUE,
+  fmt = 2
+) |>
+  # Add a nice header above the four model columns
+  group_tt(j = list("First-stage outcome: Public housing" = 2:5))
+```
+
+Housing supply, parental health status, and waiting time are all significantly associated with public housing use; food stamps are not. Parental health status has a low F-statistic that is below our threshold of 104. Housing supply and waiting time both have F-statistics that exceed 10, so they are both relevant. However, given the strong relationship between waiting time and public housing (and its large F-statistic), it's likely the more relevant instrument.
+
+## Exclusion
+
+Next, we need to check to see if the instruments meet the exclusion assumption---that they only have a causal effect on health *through* public housing. We can check part of that assumption by looking at the effect of each instrument on health status in @fig-check-exclusion-all-plots and @tbl-check-exclusion-all:
+
+```{r}
+#| label: fig-check-exclusion-all-plots
+#| fig-cap: "Plots showing the relationship between each instrument and the outcome. Ideally we want to see a relationship between health status and an instrument *only through* the treatment."
+#| fig-alt: |
+#|   Four scatter charts arranged in a 2×2 grid. Each shows one potential
+#|   instrument on the x-axis and health status (1–20 scale) on the
+#|   y-axis, with a linear regression line and confidence band overlaid.
+#|   All four instruments show positive slopes, but supply, parental
+#|   health status, and food stamp spending have shallow trends.
+#| fig-width: 8
+#| message: false
+#| out-width: 90%
+
+plot_supply_health <- ggplot(housing, aes(x = Supply, y = HealthStatus)) +
+  geom_point(size = 0.5, alpha = 0.25) +
+  geom_smooth(method = "lm")
+
+plot_parents_health <- ggplot(
+  housing,
+  aes(x = ParentsHealthStatus, y = HealthStatus)
+) +
+  geom_point(size = 0.5, alpha = 0.25) +
+  geom_smooth(method = "lm")
+
+plot_waiting_health <- ggplot(housing, aes(x = WaitingTime, y = HealthStatus)) +
+  geom_point(size = 0.5, alpha = 0.25) +
+  geom_smooth(method = "lm")
+
+plot_stamp_health <- ggplot(housing, aes(x = Stamp, y = HealthStatus)) +
+  geom_point(size = 0.5, alpha = 0.25) +
+  geom_smooth(method = "lm")
+
+plot_supply_health +
+  plot_parents_health +
+  plot_waiting_health +
+  plot_stamp_health
+```
+
+```{r}
+#| label: tbl-check-exclusion-all
+#| tbl-cap: "Model results checking (partially) for exclusion. Ideally we want to see a relationship between health status and an instrument *only through* the treatment."
+#| warning: false
+
+check_supply_health <- lm(HealthStatus ~ Supply, data = housing)
+check_parents_health <- lm(HealthStatus ~ ParentsHealthStatus, data = housing)
+check_waiting_health <- lm(HealthStatus ~ WaitingTime, data = housing)
+check_stamp_health <- lm(HealthStatus ~ Stamp, data = housing)
+
+modelsummary(
+  list(
+    check_supply_health,
+    check_parents_health,
+    check_waiting_health,
+    check_stamp_health
+  ),
+  gof_map = c("nobs", "r.squared", "adj.r.squared", "F"),
+  stars = TRUE,
+  fmt = 2
+) |>
+  group_tt(j = list("Outcome: Health status" = 2:5))
+```
+
+Here's what we can conclude:
+
+- *Housing supply*: There's a positive significant relationship between housing supply and health status. The larger a city's supply of public housing, the healthier people report being. We need to make the argument that more public housing causes health only because it gives people access to housing. This argument is actually kind of reasonable.
+- *Parent's health status*: There's a positive significant relationship between parental health and health status. The healthier one's parents are, the healthier one is. Making the case for exclusion here is tricky---we have to plausibly argue that parental health causes personal health *only* because of public housing, which is definitely not true.
+- *Waiting time*: There's a positive significant relationship between waiting time for public housing and health status. The longer people wait for a spot in public housing, the healthier they report feeling. Here, we'd need to argue that longer wait times cause health only because of access to housing, which, might be the case?
+- *Food stamps*: There's not much of a relationship here, and we'd need to argue that spending SNAP money causes you to be healthier (or less healthy) *only* because of access to public housing, which is a ridiculous idea.
+
+## Exogeneity
+
+Finally, we need to examine how exogenous each of these instruments is:
+
+- *Housing supply*: This appears at first to be fairly exogenous. A city's housing supply might not be related to individual health. However, if a city has a lot of public housing, it probably spends money on lots of other public services, which then cause better health (and vice versa; low public housing spending probably accompanies low public health spending). This is likely not that exogenous.
+- *Parent's health status*: This is most definitely not exogenous. If it were, your parents' health would have *no bearing whatsoever* on your health, which is not the case.
+- *Waiting time*: This might be exogenous, though like housing supply, it might reflect underlying trends in the city's commitment to public service provision. Also, perhaps program administrators are purposely choosing the sickest people first and making healthier people wait longer.
+- *Food stamps*: This is also definitely not exogenous. If it were, your spending on food would not be connected to your health.
+
+So, after all this checking, the variable that is likely the best instrument is waiting time. It is (1) highly relevant, (2) feels fairly exclusive, and (3) feels fairly exogenous. Housing supply might also be a good instrument too. Parental health and food stamp usage are both awful potential instruments and shouldn't be used.
+
+
+# Task 2: Naive (wrong) model
+
+Estimate a naive model of the effect of public housing on health status (i.e. without any instruments). You can include any control variables you feel appropriate (i.e. that fit in your causal model). If you use variables that are categorical like race, education, or marital status, make sure you wrap them with `as.factor()` to treat them as categories instead of numbers (e.g. `as.factor(education)`).
+
+Do all that here. Use as many chunks as you need. Narrate your process and include headings/subheadings and figure cross references to structure things nicely.
+
+::: {.callout-tip title="Answer"}
+Again, everything else in this section is the answer.
+:::
+
+We can get a naive estimate of the effect of public housing on health by running this model:
+
+```{r}
+#| label: model-naive-housing
+
+# Note the use of as.factor. Race, education, and marital status are not
+# continuous variables---you can't report a marital status of 1.4, for instance
+model_naive_housing <- lm(
+  HealthStatus ~ PublicHousing +
+    Age +
+    as.factor(Race) +
+    as.factor(Education) +
+    as.factor(MaritalStatus),
+  data = housing
+)
+
+model_parameters(model_naive_housing, verbose = FALSE)
+```
+
+According to this model, controlling for age, race, education, and marital status, an additional year of living in public housing is associated with a 0.3 point increase in self-reported health status, and the difference is statistically significant (p < 0.001).
+
+
+# Task 3: 2SLS model with instrument
+
+Estimate the effect of public housing on health status using 2SLS IV. You can/should use `iv_robust()` or `feols()` to do it all in one step (but you'll still need to run a first-stage model to find the F statistic). 
+
+Compare the results with the naive model in a side-by-side table. Which model do you trust (if any), and why?
+
+Do all that here. Use as many chunks as you need. Narrate your process and include headings/subheadings and figure cross references to structure things nicely.
+
+::: {.callout-tip title="Answer"}
+And once again, everything else in this section is the answer.
+:::
+
+That naive estimate is not a true causal effect because there are endogenous elements of living in public housing. Perhaps people who care more about their health self-select into public housing. We can remove the endogenous part of public housing by using an instrument to predict the exogenous part of public housing use. We'll use waiting time, since it seemed to be the best instrument of the four we looked at.
+
+For fun, we'll control for other characteristics, just so you can see that process.
+
+First, we'll check for relevance in the first stage with all the controls:
+
+```{r}
+#| label: first-stage-housing
+
+first_stage_housing <- lm(
+  PublicHousing ~ WaitingTime +
+    Age +
+    as.factor(Race) +
+    as.factor(Education) +
+    as.factor(MaritalStatus),
+  data = housing
+)
+
+model_parameters(first_stage_housing, verbose = FALSE)
+
+modelsummary::get_gof(first_stage_housing)
+```
+
+As expected, waiting time has a strong positive relationship with public housing (even after controlling for demographics), and the joint F-statistic for all these variables is 43.5. However, we don't actually need to worry about that since we have multiple variables. In all the earlier models where we checked for relevance, we only had one explanatory variable, so the reported F-statistic was the F-statistic for only the instrument.
+
+Since we're controlling for other variables now, we need to look at the *partial* F-statistic for the instrument alone. We can do this more automatically with `iv_robust()` (which you'll see below), but we can also do this with some quick math. In statistics, by definition, the partial F-statistic for a single coefficient is the t-statistic squared. Here, the t-statistic is 21.37, so $t^2$ = `{r} 21.37^2`. That's huge and way bigger than the recommended 104 threshold, so we're good.
+
+Next, we can run the 2SLS model in one step with `iv_robust()` (notice how the controls go in both stages, like `y ~ x + controls | instrument + controls`)
+
+```{r}
+#| label: model-2sls-housing
+#| warning: false
+
+model_2sls_housing <-
+  iv_robust(
+    HealthStatus ~ PublicHousing +
+      Age +
+      as.factor(Race) +
+      as.factor(Education) +
+      as.factor(MaritalStatus) |
+      WaitingTime +
+        Age +
+        as.factor(Race) +
+        as.factor(Education) +
+        as.factor(MaritalStatus),
+    data = housing,
+    diagnostics = TRUE  # This is so we can check for weak instruments later
+  )
+
+model_parameters(model_2sls_housing, verbose = FALSE)
+```
+
+…or with `feols()` (notice how the controls only go in the first part of the formula, like `y ~ controls | fixed effects | x ~ instrument`):
+
+```{r}
+#| label: model-2sls-housing-feols
+#| message: false
+
+library(fixest)
+
+model_2sls_housing_feols <- feols(
+  HealthStatus ~ Age + i(Race) + i(Education) + i(MaritalStatus) | # controls
+    0 | # no fixed effects
+    PublicHousing ~ WaitingTime, # endogenous ~ instrument
+  data = housing
+)
+
+model_parameters(model_2sls_housing_feols, verbose = FALSE)
+```
+
+Based on this model, an additional year in public housing causes a 0.224 increase in health status. We can talk about causation because we've dealt with endogeneity of public housing usage with our instrument.
+
+While this is neat, we should check for the effect of weak instruments to be safe. First, let's look at the weak instruments test:
+
+```{r}
+#| label: check-weak-instruments
+model_2sls_housing$diagnostic_first_stage_fstatistic
+```
+
+That value there (≈457) is the partial F-statistic for the instrument alone, and it's the same thing we found with $t^2$ = `{r} 21.37^2` earlier. The null hypothesis for this test is that the instrument we have specified is weak, so we'd like to reject that null hypothesis. Here, the p-value is tiny, so we can safely reject the null and say the instrument likely isn't weak. (In general, you want a statistically significant weak instruments test).
+
+Next, let's look at the Anderson-Rubin confidence interval:
+
+```{r}
+#| label: ar-interval-health-housing-waiting
+#| tbl-cap: Complete results
+#| message: false
+#| warning: false
+#| cache: true
+
+library(ivDiag)
+
+housing_categorical <- housing |> 
+  mutate(across(c(Race, Education, MaritalStatus), as.factor))
+
+diagnostics <- ivDiag(
+  data = housing_categorical,
+  Y = "HealthStatus",
+  D = "PublicHousing",
+  Z = "WaitingTime",
+  controls = c("Age", "Race", "Education", "MaritalStatus")
+)
+
+diagnostics$AR$ci
+```
+
+The effect here ranges between 0.209 and 0.237, which is a fairly narrow band, and it doesn't include 0. We probably have a good instrument. Phew.
+
+Also, just for fun, we can run the perfect model because I've included a column for the omitted health behavior measure, which explains all the endogeneity in public housing use. In real life this variable doesn't exist---we use instruments to get rid of this effect. How'd we do, using waiting time as an instrument?
+
+```{r}
+#| label: model-perfect-housing
+model_perfect <- lm(
+  HealthStatus ~ PublicHousing +
+    HealthBehavior +
+    as.factor(Race) +
+    as.factor(Education) +
+    as.factor(MaritalStatus),
+  data = housing
+)
+```
+
+```{r}
+#| label: tbl-models-all-housing
+#| tbl-cap: All three estimates of the effect of public housing on health
+#| warning: false
+#| message: false
+
+modelsummary(
+  list(
+    "OLS" = model_naive_housing,
+    "2SLS robust" = model_2sls_housing,
+    "Perfect" = model_perfect
+  ),
+  coef_map = c("PublicHousing"),
+  gof_map = c("nobs", "r.squared", "adj.r.squared", "F"),
+  stars = TRUE,
+  fmt = 2
+) |>
+  group_tt(j = list("Outcome: Health status" = 2:4))
+```
+
+Waiting time works pretty well! The true effect is 0.228ish, and after using an instrument to remove the endogeneity from `PublicHousing`, the effect in the 2SLS model is 0.224. Success!
+
+
+# References
