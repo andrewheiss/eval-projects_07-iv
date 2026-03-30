@@ -21,6 +21,7 @@ format:
     output-file: PREFIX_eval-07-iv.pdf
     pdf-standard: ua-1
     callout-appearance: minimal
+    # viridisLite::viridis(8, option = "inferno", begin = 0.1, end = 0.9)[4]
     linkcolor: "#a52c60"
     filters:
       - math-alt.lua
@@ -34,10 +35,6 @@ format:
         }
     include-before-body: 
       text: |
-        // Color links with pink-ish red from viridis plasma: 
-        // viridisLite::viridis(8, option = "inferno", begin = 0.1, end = 0.9)[4]
-        #show link: set text(fill: rgb("a52c60"))
-
         // Keep track of previous heading levels
         #let last-heading-level = state("last-heading-level", 0)
 
